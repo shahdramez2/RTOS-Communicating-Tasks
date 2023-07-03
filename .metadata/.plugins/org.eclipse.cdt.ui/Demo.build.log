@@ -1,0 +1,11 @@
+08:37:01 **** Incremental Build of configuration Debug for project Demo ****
+make all 
+Invoking: GNU Arm Cross Print Size
+arm-none-eabi-size --format=berkeley "Demo.elf"
+   text	   data	    bss	    dec	    hex	filename
+  25204	    156	  78432	 103792	  19570	Demo.elf
+Finished building: Demo.siz
+ 
+
+08:37:02 Build Finished. 0 errors, 0 warnings. (took 860ms)
+

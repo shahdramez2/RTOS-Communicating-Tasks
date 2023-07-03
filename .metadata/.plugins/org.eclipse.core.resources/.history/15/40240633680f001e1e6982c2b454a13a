@@ -1,0 +1,629 @@
+/*
+ * This file is part of the µOS++ distribution.
+ *   (https://github.com/micro-os-plus)
+ * Copyright (c) 2014 Liviu Ionescu.
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom
+ * the Software is furnished to do so, subject to the following
+ * conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
+ * This file is part of the µOS++ distribution.
+ *   (https://github.com/micro-os-plus)
+ * Copyright (c) 2014 Liviu Ionescu.
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom
+ * the Software is furnished to do so, subject to the following
+ * conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+// ----------------------------------------------------------------------------
+/*
+ * This file is part of the µOS++ distribution.
+ *   (https://github.com/micro-os-plus)
+ * Copyright (c) 2014 Liviu Ionescu.
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom
+ * the Software is furnished to do so, subject to the following
+ * conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+// ----------------------------------------------------------------------------
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "diag/trace.h"
+
+/* Kernel includes. */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "timers.h"
+#include "semphr.h"
+#include "time.h"
+
+#define CCM_RAM __attribute__((section(".ccmram")))
+
+/*-----------------------------------------------------------*/
+// Semihosting STM32F4 empty sample (trace via DEBUG).
+//
+// Trace support is enabled by adding the TRACE macro definition.
+// By default the trace messages are forwarded to the DEBUG output,
+// but can be rerouted to any device or completely suppressed, by
+// changing the definitions required in system/src/diag/trace-impl.c
+// (currently OS_USE_TRACE_ITM, OS_USE_TRACE_SEMIHOSTING_DEBUG/_STDOUT).
+//
+
+
+/*----------------------------------------------------------------Definitions-----------------------------------------------------------------------*/
+#define Treceiver                                      100
+#define MAX_STIRNG_LENGTH                              20
+#define NUM_OF_RUNS                                    6
+#define MAX_NUM_OF_RECEIVED_MESSAGES_PER_RUN           5
+#define QUEUE_SIZE                                     3
+/*----------------------------------------------------------------Functions Prototypes-----------------------------------------------------------------------*/
+static void prvSenderTimerCallback( TimerHandle_t xTimer );
+static void prvReceiverTimerCallback( TimerHandle_t xTimer );
+
+static void senderTask1 (void* parameters);
+static void senderTask2 (void* parameters);
+static void senderTask3 (void* parameters);
+static void receiverTask (void* parameters);
+
+static void reset (void);
+static void endOfIteration (void);
+static uint32_t generateRandomTsender (uint32_t minBound, uint32_t maxBound);
+
+/*----------------------------------------------------------------Global Variables-----------------------------------------------------------------------*/
+static QueueHandle_t globalQueueHandle = NULL;
+
+static TimerHandle_t xTimerSender1 = NULL;
+static TimerHandle_t xTimerSender2 = NULL;
+static TimerHandle_t xTimerSender3 = NULL;
+static TimerHandle_t xTimerReceiver = NULL;
+
+static BaseType_t xTimerSender1Started, xTimerSender2Started, xTimerSender3Started, xTimerReceiverStarted;
+
+static TaskHandle_t xSender1Handle = NULL;
+static TaskHandle_t xSender2Handle = NULL;
+static TaskHandle_t xSender3Handle = NULL;
+static TaskHandle_t xReceiverHandle = NULL;
+
+static BaseType_t xSender1, xSender2, xSender3, xReceiver;
+
+static SemaphoreHandle_t xSemaphoreSender1;
+static SemaphoreHandle_t xSemaphoreSender2;
+static SemaphoreHandle_t xSemaphoreSender3;
+static SemaphoreHandle_t xSemaphoreReceiver;
+
+/*Sender1 Counters */
+static uint32_t gNumOfTransmittedMessagesOfSender1=0;
+static uint32_t gNumOfBlockedMessagesOfSender1=0;
+
+/*Sender2 Counters */
+static uint32_t gNumOfTransmittedMessagesOfSender2=0;
+static uint32_t gNumOfBlockedMessagesOfSender2=0;
+
+/*Sender3 Counters */
+static uint32_t gNumOfTransmittedMessagesOfSender3=0;
+static uint32_t gNumOfBlockedMessagesOfSender3=0;
+
+/*receiver counter*/
+static uint32_t gNumOfReceivedMessages=0;
+
+/*Randomized Tsender*/
+static uint32_t gRandomTsender;
+
+static uint32_t minBoundOfTsender[6] = {50, 80, 110, 140, 170, 200};
+static uint32_t maxBoundOfTsender[6] = {150, 200, 250, 300, 350, 400};
+
+
+/* global variable to hold which iteration the program is now running */
+static uint8_t gCurrentRunNumber= 0;
+
+
+/*Array to hold Tsender summation values for each timer per each iteration*/
+static uint32_t gTsenderSumArr1 [NUM_OF_RUNS] ={0};
+static uint32_t gTsenderSumArr2 [NUM_OF_RUNS] ={0};
+static uint32_t gTsenderSumArr3 [NUM_OF_RUNS] ={0};
+
+/*----------------------------------------------------------------main()-----------------------------------------------------------------------*/
+
+// Sample pragmas to cope with warnings. Please note the related line at
+// the end of this function, used to pop the compiler diagnostics status.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wmissing-declarations"
+#pragma GCC diagnostic ignored "-Wreturn-type"
+
+int
+main(int argc, char* argv[])
+{
+	//srand(time(NULL));
+
+	/*Create Queue */
+	globalQueueHandle = xQueueCreate(QUEUE_SIZE, sizeof(uint8_t*));
+
+	if(globalQueueHandle == NULL)
+	{
+		printf("The queue was not created successfully\n");
+		return 1;
+	}else{
+		//printf("Queue was created successfully\n");
+	}
+
+	/*Create 3 sender tasks and 1 receiver task */
+	xSender1=  xTaskCreate (senderTask1,  "Sender1 Task", 1024, NULL, 1, &xSender1Handle);
+	xSender2=  xTaskCreate (senderTask2,  "Sender2 Task", 1024, NULL, 1, &xSender2Handle);
+	xSender3=  xTaskCreate (senderTask3,  "Sender3 Task", 1024, NULL, 2, &xSender3Handle);
+	xReceiver= xTaskCreate (receiverTask, "Receiver Task",1024, NULL, 3, &xReceiverHandle);
+
+	/*Check if all tasks were created successfully */
+	if (xSender1 == pdFAIL || xSender2 == pdFAIL || xSender3 == pdFAIL || xReceiver == pdFAIL )
+	{
+		printf("One of the tasks was not created successfully\n");
+		return 1;
+	}else{
+		//printf("All tasks were created successfully\n");
+		/* All the tasks were created successfully */
+	}
+
+	/*Create semphores */
+	xSemaphoreSender1  = xSemaphoreCreateBinary();
+	xSemaphoreSender2  = xSemaphoreCreateBinary();
+	xSemaphoreSender3  = xSemaphoreCreateBinary();
+	xSemaphoreReceiver = xSemaphoreCreateBinary();
+
+	/*check semaphores are created successfully*/
+	if(xSemaphoreSender1 == NULL || xSemaphoreSender2 == NULL || xSemaphoreSender3 == NULL || xSemaphoreReceiver == NULL)
+	{
+		printf ("A semaphore was not created successfully\n");
+		return 1;
+	} else {
+		/* All semaphores were created successfully */
+		//printf("All semaphores were created successfully\n");
+	}
+
+	/*initialize the system*/
+	reset();
+
+
+	/*Create four Timers*/
+	xTimerSender1  = xTimerCreate("TimerOfSender_1", pdMS_TO_TICKS( gRandomTsender) , pdTRUE, ( void * ) 1, prvSenderTimerCallback);
+	gRandomTsender= generateRandomTsender(minBoundOfTsender[gCurrentRunNumber], maxBoundOfTsender[gCurrentRunNumber]);
+	xTimerSender2  = xTimerCreate("TimerOfSender_2", pdMS_TO_TICKS( gRandomTsender) , pdTRUE, ( void * ) 2, prvSenderTimerCallback);
+	gRandomTsender= generateRandomTsender(minBoundOfTsender[gCurrentRunNumber], maxBoundOfTsender[gCurrentRunNumber]);
+	xTimerSender3  = xTimerCreate("TimerOfSender_3", pdMS_TO_TICKS( gRandomTsender) , pdTRUE, ( void * ) 3, prvSenderTimerCallback);
+	xTimerReceiver = xTimerCreate("TimerOfReceiver", pdMS_TO_TICKS(Treceiver), pdTRUE, ( void * ) 4, prvReceiverTimerCallback);
+
+
+	/*Check if software timers were created successfully */
+	if ( (xTimerSender1 != NULL) && (xTimerSender1 != NULL) && (xTimerSender1 != NULL) && (xTimerSender1 != NULL))
+	{
+		//printf("All timers were created successfully\n");
+		/*Start software timers */
+		xTimerSender1Started=  xTimerStart (xTimerSender1, 0);
+		xTimerSender2Started=  xTimerStart (xTimerSender2, 0);
+		xTimerSender3Started=  xTimerStart (xTimerSender3, 0);
+		xTimerReceiverStarted= xTimerStart (xTimerReceiver, 0);
+	} else {
+		printf("One of the timers was not created successfully\n");
+		return 1;
+	}
+
+
+	if (xTimerSender1Started == pdPASS && xTimerSender2Started == pdPASS && xTimerSender3Started == pdPASS && xTimerReceiverStarted == pdPASS)
+	{
+		//printf("Starting the scheduler now\n");
+		vTaskStartScheduler();
+	}
+
+	return 0;
+}
+
+#pragma GCC diagnostic pop
+
+/*----------------------------------------------------------------Functions and Tasks Implementation-----------------------------------------------------------------------*/
+void senderTask1 (void* parameters)
+{
+	TickType_t currentTime;
+	//uint8_t message[MAX_STIRNG_LENGTH];
+	char* sendMsg = (char*)pvPortMalloc(MAX_STIRNG_LENGTH * sizeof(char));
+
+	for( ;; )
+	{
+		if (xSemaphoreTake(xSemaphoreSender1, portMAX_DELAY) == pdTRUE)
+		{
+
+			currentTime = xTaskGetTickCount();
+			snprintf(sendMsg, MAX_STIRNG_LENGTH , "Time is %lu", currentTime);
+
+			//printf("Sender1 is about to try sending and its message is ------>''Time is '' %li\n",sendMsg);
+
+
+			if (xQueueSend(globalQueueHandle, (void*) &sendMsg, ( TickType_t ) 0) == pdTRUE)
+			{
+				//printf("Sender 1 message sent\n");
+				++gNumOfTransmittedMessagesOfSender1;
+
+			} else {
+				//printf("Sender 1 message blocked\n");
+				++gNumOfBlockedMessagesOfSender1;
+
+			}
+
+			/* change the period of the TimerOfSender_1*/
+			gRandomTsender= generateRandomTsender(minBoundOfTsender[gCurrentRunNumber], maxBoundOfTsender[gCurrentRunNumber] );
+			//printf("Tsender of task 1 is %lu\n", gRandomTsender);
+
+			/* increment the summation of task 1 Tsender per run */
+			gTsenderSumArr1[gCurrentRunNumber]+= gRandomTsender;
+
+			if(xTimerChangePeriod (xTimerSender1, pdMS_TO_TICKS ( gRandomTsender ), 0) == pdPASS)
+			{
+				/* The command was sent successfully */
+			} else {
+				printf("Changing period of TimerOfSender_1 was not successful\n");
+			}
+
+		}
+
+	}
+}
+
+void senderTask2 (void* parameters)
+{
+	TickType_t currentTime;
+	char* sendMsg = (char*)pvPortMalloc(MAX_STIRNG_LENGTH * sizeof(char));;
+
+	for( ;; )
+	{
+		if (xSemaphoreTake(xSemaphoreSender2, portMAX_DELAY) == pdTRUE)
+		{
+
+			currentTime = xTaskGetTickCount();
+			snprintf(sendMsg, MAX_STIRNG_LENGTH, "Time is %lu", currentTime);
+
+			//printf("Sender2 is about to try sending and its message is  ------> %s\n ",sendMsg);
+
+			if (xQueueSend(globalQueueHandle, (void*) &sendMsg, ( TickType_t ) 0) == pdPASS)
+			{
+				//printf("Sender 2 message sent\n");
+				++gNumOfTransmittedMessagesOfSender2;
+
+			} else {
+
+				//printf("Sender 2 message blocked\n");
+				++gNumOfBlockedMessagesOfSender2;
+
+			}
+
+			/* change the period of the TimerOfSender_1*/
+			gRandomTsender= generateRandomTsender(minBoundOfTsender[gCurrentRunNumber], maxBoundOfTsender[gCurrentRunNumber] );
+
+			//printf("Tsender of task 2 is %lu\n", gRandomTsender);
+
+			/*increment the summation of task 2 Tsender per run*/
+			gTsenderSumArr2[gCurrentRunNumber]+= gRandomTsender;
+
+			if(xTimerChangePeriod (xTimerSender2, pdMS_TO_TICKS ( gRandomTsender),  ( TickType_t ) 0) == pdPASS)
+			{
+				/* The command was sent successfully */
+			} else {
+				printf("Changing period of TimerOfSender_2 was not successful\n");
+			}
+
+		}
+
+	}
+}
+
+void senderTask3 (void* parameters)
+{
+	TickType_t currentTime;
+	char* sendMsg = (char*)pvPortMalloc(MAX_STIRNG_LENGTH * sizeof(char));
+
+	for( ;; )
+	{
+		if (xSemaphoreTake(xSemaphoreSender3, portMAX_DELAY) == pdTRUE)
+		{
+			currentTime = xTaskGetTickCount();
+			snprintf(sendMsg, MAX_STIRNG_LENGTH , "Time is %lu", currentTime);
+
+			//printf("Sender3 is about to try sending and its message is  ------> %s\n",sendMsg);
+
+			if(xQueueSend(globalQueueHandle, (void*) &sendMsg, ( TickType_t ) 0 ) == pdTRUE)
+			{
+				//printf("Sender 3 message sent\n");
+				++gNumOfTransmittedMessagesOfSender3;
+			} else {
+				//printf("Sender 3 message blocked\n");
+				++gNumOfBlockedMessagesOfSender3;
+			}
+
+			/* change the period of the TimerOfSender_1*/
+			gRandomTsender= generateRandomTsender(minBoundOfTsender[gCurrentRunNumber], maxBoundOfTsender[gCurrentRunNumber] );
+
+			//printf("Tsender of task 3 is %lu\n", gRandomTsender);
+
+			/*increment the summation of task 3 Tsender per run*/
+			gTsenderSumArr3[gCurrentRunNumber]+= gRandomTsender;
+
+			if(xTimerChangePeriod (xTimerSender3, pdMS_TO_TICKS ( gRandomTsender),  ( TickType_t ) 0) == pdPASS)
+			{
+				/* The command was sent successfully */
+			} else {
+				printf("Changing period of TimerOfSender_3 was not successful\n");
+			}
+
+		}
+
+	}
+}
+
+void receiverTask (void* parameters)
+{
+	//uint8_t receivedMessage[MAX_STIRNG_LENGTH];
+	//char* receivedMessage = (char*)malloc((MAX_STIRNG_LENGTH + 1) * sizeof(char));
+	char* receivedMessage;
+
+	for( ;; )
+	{
+		if (xSemaphoreTake(xSemaphoreReceiver, portMAX_DELAY) == pdTRUE)
+		{
+			if (xQueueReceive(globalQueueHandle, (void*) &receivedMessage, ( TickType_t ) 0) == pdTRUE)
+			{
+				//printf("The message received is : %s\n", receivedMessage);
+
+				++gNumOfReceivedMessages;
+
+			}else{
+				//printf("No message is received\n");
+			}
+		}
+	}
+}
+
+static void prvSenderTimerCallback( TimerHandle_t xTimer )
+{
+	if(xTimer == xTimerSender1)
+	{
+		//printf("Timer1 callback function\n");
+		xSemaphoreGiveFromISR(xSemaphoreSender1, NULL);
+	}else if(xTimer == xTimerSender2)
+	{
+		//printf("Timer2 callback function\n");
+		xSemaphoreGiveFromISR(xSemaphoreSender2, NULL);
+	}else
+	{
+		//printf("Timer3 callback function\n");
+		xSemaphoreGiveFromISR(xSemaphoreSender3, NULL);
+	}
+}
+
+static void prvReceiverTimerCallback( TimerHandle_t xTimer )
+{
+	//printf("receiver callback function\n");
+	//xSemaphoreGiveFromISR(xSemaphoreReceiver,NULL);
+
+	if(gNumOfReceivedMessages == MAX_NUM_OF_RECEIVED_MESSAGES_PER_RUN)
+	{
+		endOfIteration();
+		reset();
+	}
+
+	xSemaphoreGiveFromISR(xSemaphoreReceiver,NULL);
+}
+
+static void endOfIteration (void)
+{
+	printf("\n\nThe statistics of Run number %d is\nThe total number of transmitted messages is: %lu \nThe total number of blocked messages is: %lu\n\n",
+			(gCurrentRunNumber+1), gNumOfTransmittedMessagesOfSender1 + gNumOfTransmittedMessagesOfSender2 + gNumOfTransmittedMessagesOfSender3,
+			gNumOfBlockedMessagesOfSender1 + gNumOfBlockedMessagesOfSender2 + gNumOfBlockedMessagesOfSender3);
+
+	printf("The statistics of Sender (1) (Low priority task) is: \nThe number of transmitted messages is %lu \nThe number of blocked messages is %lu\nThe number of sent messages is\n\n",
+			gNumOfTransmittedMessagesOfSender1, gNumOfBlockedMessagesOfSender1, (gNumOfTransmittedMessagesOfSender1+gNumOfBlockedMessagesOfSender1) );
+
+	printf("The statistics of Sender (2) (Low priority task) is: \nThe number of transmitted messages is %lu \nThe number of blocked messages is %lu \n\n",
+			gNumOfTransmittedMessagesOfSender2, gNumOfBlockedMessagesOfSender2);
+
+	printf("The statistics of Sender (3) (High priority task) is: \nThe number of transmitted messages is %lu \nThe number of blocked messages is %lu \n\n\n",
+			gNumOfTransmittedMessagesOfSender3, gNumOfBlockedMessagesOfSender3);
+
+	printf("Tsender summations are as follows: \n");
+
+	printf("The summation of Tsender of senderTask (1) of run# %d is: %lu\n", gCurrentRunNumber+1 , gTsenderSumArr1[gCurrentRunNumber]);
+	printf("The summation of Tsender of senderTask (2) of run# %d is: %lu\n", gCurrentRunNumber+1 , gTsenderSumArr2[gCurrentRunNumber]);
+	printf("The summation of Tsender of senderTask (3) of run# %d is: %lu\n", gCurrentRunNumber+1 , gTsenderSumArr3[gCurrentRunNumber]);
+
+	printf("******************************************************************\n");
+
+	/*increment the current gCurrentRunNumber to go to the next iteration*/
+	++gCurrentRunNumber;
+
+	/*Exit the program if all iterations are done*/
+	if(gCurrentRunNumber == NUM_OF_RUNS)
+	{
+		/*Destroy all timers */
+		if(xTimerDelete(xTimerSender1,0) == pdPASS && xTimerDelete(xTimerSender2,0) == pdPASS && xTimerDelete(xTimerSender3,0) == pdPASS && xTimerDelete(xTimerReceiver,0) == pdPASS )
+		{
+			/*All timers were destroyed successfully*/
+		}else {
+			printf("There was a problem deleting timers\n");
+		}
+
+		printf("Game Over\n");
+
+#if 0
+		vTaskDelete(xReceiverHandle);
+		vTaskDelete(xSender1Handle);
+		vTaskDelete(xSender2Handle);
+		vTaskDelete(xSender3Handle);
+		//vTaskEndScheduler();
+#endif
+		exit(0);
+	}
+
+}
+
+static void reset (void)
+{
+	printf("Implementing reset function\n");
+
+	/*Clear Counters*/
+	gNumOfTransmittedMessagesOfSender1=0;
+	gNumOfTransmittedMessagesOfSender2=0;
+	gNumOfTransmittedMessagesOfSender3=0;
+
+	gNumOfBlockedMessagesOfSender1=0;
+	gNumOfBlockedMessagesOfSender2=0;
+	gNumOfBlockedMessagesOfSender3=0;
+
+	gNumOfReceivedMessages=0;
+
+	/*Clear the queue */
+	xQueueReset(globalQueueHandle);
+
+	/*Configure the values controlling the sender timer period Tsender */
+	gRandomTsender= generateRandomTsender(minBoundOfTsender[gCurrentRunNumber], maxBoundOfTsender[gCurrentRunNumber]);
+}
+
+static uint32_t generateRandomTsender (uint32_t minBound, uint32_t maxBound) {
+
+	uint32_t range = maxBound - minBound + 1;
+	uint32_t scaledRandom = (uint32_t)(((double)rand() / (double)RAND_MAX) * range);
+	return scaledRandom + minBound;
+}
+
+
+
+/*-----------------------------------------------------------------------------------------------------------------*/
+/*-----------------------------------------------------------------------------------------------------------------*/
+/*-----------------------------------------------------------------------------------------------------------------*/
+void vApplicationMallocFailedHook( void )
+{
+	/* Called if a call to pvPortMalloc() fails because there is insufficient
+	free memory available in the FreeRTOS heap.  pvPortMalloc() is called
+	internally by FreeRTOS API functions that create tasks, queues, software
+	timers, and semaphores.  The size of the FreeRTOS heap is set by the
+	configTOTAL_HEAP_SIZE configuration constant in FreeRTOSConfig.h. */
+	for( ;; );
+}
+/*-----------------------------------------------------------*/
+
+void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
+{
+	( void ) pcTaskName;
+	( void ) pxTask;
+
+	/* Run time stack overflow checking is performed if
+	configconfigCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2.  This hook
+	function is called if a stack overflow is detected. */
+	for( ;; );
+}
+/*-----------------------------------------------------------*/
+
+void vApplicationIdleHook( void )
+{
+	volatile size_t xFreeStackSpace;
+
+	/* This function is called on each cycle of the idle task.  In this case it
+	does nothing useful, other than report the amout of FreeRTOS heap that
+	remains unallocated. */
+	xFreeStackSpace = xPortGetFreeHeapSize();
+
+	if( xFreeStackSpace > 100 )
+	{
+		/* By now, the kernel has allocated everything it is going to, so
+		if there is a lot of heap remaining unallocated then
+		the value of configTOTAL_HEAP_SIZE in FreeRTOSConfig.h can be
+		reduced accordingly. */
+	}
+}
+
+void vApplicationTickHook(void) {
+}
+
+StaticTask_t xIdleTaskTCB CCM_RAM;
+StackType_t uxIdleTaskStack[configMINIMAL_STACK_SIZE] CCM_RAM;
+
+void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize) {
+	/* Pass out a pointer to the StaticTask_t structure in which the Idle task's
+  state will be stored. */
+	*ppxIdleTaskTCBBuffer = &xIdleTaskTCB;
+
+	/* Pass out the array that will be used as the Idle task's stack. */
+	*ppxIdleTaskStackBuffer = uxIdleTaskStack;
+
+	/* Pass out the size of the array pointed to by *ppxIdleTaskStackBuffer.
+  Note that, as the array is necessarily of type StackType_t,
+  configMINIMAL_STACK_SIZE is specified in words, not bytes. */
+	*pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
+}
+
+static StaticTask_t xTimerTaskTCB CCM_RAM;
+static StackType_t uxTimerTaskStack[configTIMER_TASK_STACK_DEPTH] CCM_RAM;
+
+/* configUSE_STATIC_ALLOCATION and configUSE_TIMERS are both set to 1, so the
+application must provide an implementation of vApplicationGetTimerTaskMemory()
+to provide the memory that is used by the Timer service task. */
+void vApplicationGetTimerTaskMemory(StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize) {
+	*ppxTimerTaskTCBBuffer = &xTimerTaskTCB;
+	*ppxTimerTaskStackBuffer = uxTimerTaskStack;
+	*pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
+}
+
+
+
+
